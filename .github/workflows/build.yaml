@@ -1,118 +1,122 @@
-name: TN3399-V3 Fast DTB Build
+name: Build HAOS for TN3399-V3
 
-# 仅手动触发，避免误触发浪费免费额度
 on:
   workflow_dispatch:
     inputs:
-      kernel_branch:
-        description: "Kernel Branch (e.g. linux-6.12.y)"
+      haos_version:
+        description: 'HAOS Version (e.g. 12.0)'
         required: true
-        default: "linux-6.12.y"  # 项目默认内核分支，可按需修改
-      dtb_output_name:
-        description: "Output DTB Filename (without .dtb)"
+        default: '12.0'
+      kernel_version:
+        description: 'Kernel Version (e.g. 6.12.35)'
         required: true
-        default: "rk3399-tn3399-v3"  # 输出DTB文件名，保持默认即可
+        default: '6.12.35'
 
 jobs:
-  build-dtb:
+  build:
     runs-on: ubuntu-latest
     env:
-      # 固定路径，简化缓存与编译逻辑
-      KERNEL_REPO: "https://github.com/rockchip-linux/kernel.git"  # 项目依赖的Rockchip内核
-      KERNEL_DIR: "/home/runner/work/tn3399-dtb/kernel"
-      DTB_PATH: "arch/arm64/boot/dts/rockchip"
-      DTB_FULL_PATH: "${{ env.KERNEL_DIR }}/arch/arm64/boot/dts/rockchip/${{ github.event.inputs.dtb_output_name }}.dtb"
-      # 交叉编译与架构配置（RK3399固定为arm64）
-      CROSS_COMPILE: "aarch64-linux-gnu-"
-      ARCH: "arm64"
+      HAOS_VERSION: ${{ github.event.inputs.haos_version }}
+      KERNEL_VERSION: ${{ github.event.inputs.kernel_version }}
+      # 固定工作目录，方便缓存和路径管理
+      WORK_DIR: /home/runner/work/haos-ace-tn3399-v3/haos-build
+      # 交叉编译工具链前缀（RK3399为arm64）
+      CROSS_COMPILE: aarch64-linux-gnu-
+      ARCH: arm64
 
     steps:
-      # 步骤1：拉取项目源码（仅需板卡配置相关文件，浅克隆提速）
-      - name: Checkout TN3399-V3 Project
+      # 步骤1：拉取仓库源码（仅拉取最新提交，减少冗余）
+      - name: Checkout Repository
         uses: actions/checkout@v4
         with:
-          repository: "jac0bz1980/haos-ace-tn3399-v3"
-          path: "tn3399-project"
-          fetch-depth: 1  # 仅拉取最新1个提交，下载量<10MB
+          path: haos-repo
+          fetch-depth: 1  # 仅拉取最新1个提交，节省时间
 
-      # 步骤2：超级缓存（覆盖内核源码、工具链、配置文件，关键提速点）
-      - name: Cache All Dependencies
+      # 步骤2：缓存核心资源（关键提速！）
+      - name: Cache Dependencies & Build Files
         uses: actions/cache@v3
         with:
           path: |
-            # 缓存交叉编译工具链（避免重复apt安装，节省3-5分钟）
+            # 缓存交叉编译工具链
             /usr/bin/aarch64-linux-gnu-*
-            # 缓存内核源码（首次下载后，后续直接复用，节省5-10分钟）
-            ${{ env.KERNEL_DIR }}
-            # 缓存内核配置（避免重复生成defconfig，节省1分钟）
-            ${{ env.KERNEL_DIR }}/.config
-            # 缓存内核自带DTC编译器（避免重复编译DTC，节省30秒）
-            ${{ env.KERNEL_DIR }}/scripts/dtc/dtc
-          # 缓存键：系统+内核分支，分支不变则100%复用缓存
-          key: ${{ runner.os }}-tn3399-dtb-${{ github.event.inputs.kernel_branch }}
-          # 降级缓存：分支变更时，优先复用工具链和DTC
+            # 缓存编译缓存（ccache）
+            ~/.ccache
+            # 缓存内核源码（若分支未更新，直接复用）
+            ${{ env.WORK_DIR }}/linux-src
+            # 缓存HAOS基础根文件系统（若版本未变，无需重下）
+            ${{ env.WORK_DIR }}/rootfs
+          key: ${{ runner.os }}-cache-${{ env.HAOS_VERSION }}-${{ env.KERNEL_VERSION }}
+          # 缓存命中策略：版本一致则复用，不一致则更新
           restore-keys: |
-            ${{ runner.os }}-tn3399-dtb-
-            ${{ runner.os }}-tn3399-
+            ${{ runner.os }}-cache-${{ env.HAOS_VERSION }}-
+            ${{ runner.os }}-cache-
 
-      # 步骤3：安装最小依赖（仅保留必需工具，无任何冗余）
-      - name: Install Minimal Tools
+      # 步骤3：合并安装依赖（减少apt调用次数）
+      - name: Install Required Dependencies
         run: |
           sudo apt update -y && sudo apt install -y \
-            gcc-aarch64-linux-gnu make bc flex bison git \
-            --no-install-recommends  # 不安装推荐依赖，减少下载量
-          # 验证交叉工具链可用性（提前排查工具链问题）
-          ${{ env.CROSS_COMPILE }}gcc --version || exit 1
+            make gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
+            bc flex bison dtc ccache kmod cpio \
+            parted dosfstools squashfs-tools \
+            git wget curl docker.io
+          # 启动Docker服务（后续镜像构建用）
+          sudo systemctl start docker
+          # 配置ccache（启用编译缓存）
+          echo "export CCACHE_DIR=~/.ccache" >> ~/.bashrc
+          echo "export USE_CCACHE=1" >> ~/.bashrc
+          source ~/.bashrc
+          ccache -M 5G  # 限制缓存大小（免费额度下避免占满存储）
 
-      # 步骤4：拉取内核源码（仅首次执行，缓存复用后跳过）
-      - name: Fetch Rockchip Kernel
+      # 步骤4：准备工作目录（避免路径混乱）
+      - name: Prepare Work Directory
         run: |
-          mkdir -p $(dirname ${{ env.KERNEL_DIR }})
-          # 若内核目录不存在，浅克隆目标分支（下载量<200MB，比全克隆快80%）
-          if [ ! -d "${{ env.KERNEL_DIR }}" ]; then
-            git clone \
-              --branch ${{ github.event.inputs.kernel_branch }} \
-              --depth 1 \
-              ${{ env.KERNEL_REPO }} \
-              ${{ env.KERNEL_DIR }}
+          mkdir -p ${{ env.WORK_DIR }}
+          cd ${{ env.WORK_DIR }}
+          # 仅当内核源码不存在时才下载（缓存复用）
+          if [ ! -d "linux-src" ]; then
+            git clone --branch linux-${{ env.KERNEL_VERSION }} \
+              https://github.com/rockchip-linux/kernel.git linux-src
+          fi
+          # 仅当根文件系统不存在时才下载（缓存复用）
+          if [ ! -d "rootfs" ]; then
+            wget https://github.com/home-assistant/operating-system/releases/download/${{ env.HAOS_VERSION }}/haos-rootfs-${{ env.HAOS_VERSION }}.tar.xz
+            mkdir -p rootfs && tar -xf haos-rootfs-${{ env.HAOS_VERSION }}.tar.xz -C rootfs
           fi
 
-      # 步骤5：生成板卡专属配置（使用项目定制defconfig，避免配置兼容问题）
-      - name: Apply TN3399-V3 Config
+      # 步骤5：编译内核+设备树（并行编译+缓存）
+      - name: Build Kernel & DTB
         run: |
-          cd ${{ env.KERNEL_DIR }}
-          # 检查板卡配置是否存在，存在则用专属配置，不存在则报错（确保配置正确）
-          if [ -f "arch/${{ env.ARCH }}/configs/tn3399_v3_defconfig" ]; then
-            make tn3399_v3_defconfig
-          else
-            echo "Error: tn3399_v3_defconfig not found!" && exit 1
+          cd ${{ env.WORK_DIR }}/linux-src
+          source ~/.bashrc  # 加载ccache配置
+          # 内核配置（仅首次构建生成，后续复用.config）
+          if [ ! -f ".config" ]; then
+            make tn3399_v3_defconfig  # 假设板卡有自定义配置，无则用rockchip_defconfig
           fi
+          # 并行编译（-j$(nproc)自动适配核心数，免费Runner通常2核）
+          make -j$(nproc) ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            zImage dtbs modules  # 编译内核镜像、设备树、驱动模块
+          # 安装模块到根文件系统（增量安装，仅更新新模块）
+          make modules_install ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
+            INSTALL_MOD_PATH=${{ env.WORK_DIR }}/rootfs
 
-      # 步骤6：极速编译DTB（仅编译目标DTB，用内核自带DTC，无任何冗余操作）
-      - name: Compile Target DTB
+      # 步骤6：构建HAOS镜像（精简打包逻辑）
+      - name: Build HAOS Image
         run: |
-          cd ${{ env.KERNEL_DIR }}
-          # 1. 先编译内核自带DTC（仅首次需要，后续缓存复用）
-          make -j$(nproc) scripts/dtc/dtc ARCH=${{ env.ARCH }}
-          # 2. 仅编译目标DTB，指定内核DTC路径，绕开系统依赖
-          make -j$(nproc) \
-            ARCH=${{ env.ARCH }} \
-            CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            DTC=${{ env.KERNEL_DIR }}/scripts/dtc/dtc \
-            ${{ env.DTB_FULL_PATH }}
-          # 验证DTB生成结果（检查文件是否存在且为有效DTB）
-          if [ -f "${{ env.DTB_FULL_PATH }}" ]; then
-            echo "DTB Compile Success!"
-            file ${{ env.DTB_FULL_PATH }}  # 输出文件类型，确认是设备树二进制
-          else
-            echo "Error: DTB not generated!" && exit 1
-          fi
+          cd ${{ env.WORK_DIR }}
+          # 复制内核和设备树到根文件系统（仅覆盖更新）
+          cp linux-src/arch/${{ env.ARCH }}/boot/zImage rootfs/boot/
+          cp linux-src/arch/${{ env.ARCH }}/boot/dts/rockchip/rk3399-tn3399-v3.dtb rootfs/boot/
+          # 生成镜像（简化分区，仅保留必要分区）
+          sudo ./haos-repo/scripts/mkhaosimg.sh \
+            -v ${{ env.HAOS_VERSION }} \
+            -k ${{ env.KERNEL_VERSION }} \
+            -r rootfs \
+            -o haos-tn3399-v3-${{ env.HAOS_VERSION }}.img
 
-      # 步骤7：输出DTB（上传为Artifact，方便下载，自动清理旧文件）
-      - name: Upload DTB File
+      # 步骤7：上传镜像（仅保留1个版本，避免存储溢出）
+      - name: Upload HAOS Image
         uses: actions/upload-artifact@v4
         with:
-          name: "tn3399-v3-dtb-${{ github.event.inputs.kernel_branch }}"
-          path: ${{ env.DTB_FULL_PATH }}
-          retention-days: 3  # 仅保留3天，最大化节省免费存储额度
-          if-no-files-found: error  # 无文件时报错，避免空Artifact
+          name: haos-tn3399-v3-${{ env.HAOS_VERSION }}
+          path: ${{ env.WORK_DIR }}/haos-tn3399-v3-${{ env.HAOS_VERSION }}.img
+          retention-days: 7  # 自动删除7天前的镜像，节省免费存储
