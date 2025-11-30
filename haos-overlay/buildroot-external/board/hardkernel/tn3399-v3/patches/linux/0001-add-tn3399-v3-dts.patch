@@ -25,7 +25,6 @@ index 0000000..abcdefg
 +#include <dt-bindings/pwm/pwm.h>
 +#include <dt-bindings/input/input.h>
 +#include "rk3399.dtsi"
-+#include "rk3399-opp.dtsi"
 +
 +/ {
 +	model = "TIANNUO TN3399_V3";
