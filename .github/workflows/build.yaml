@@ -7,116 +7,117 @@ on:
         description: 'HAOS Version (e.g. 12.0)'
         required: true
         default: '12.0'
-      kernel_version:
-        description: 'Kernel Version (e.g. 6.12.35)'
+      kernel_branch:  # 关键修改：参数名从 kernel_version 改为 kernel_branch
+        description: 'Kernel Branch (e.g. linux-6.12.y, 需符合Rockchip仓库分支格式)'
         required: true
-        default: '6.12.35'
+        default: 'linux-6.12.y'  # 改为仓库标准分支，而非具体补丁版本
 
 jobs:
   build:
     runs-on: ubuntu-latest
     env:
       HAOS_VERSION: ${{ github.event.inputs.haos_version }}
-      KERNEL_VERSION: ${{ github.event.inputs.kernel_version }}
-      # 固定工作目录，方便缓存和路径管理
+      KERNEL_BRANCH: ${{ github.event.inputs.kernel_branch }}  # 同步修改环境变量名
       WORK_DIR: /home/runner/work/haos-ace-tn3399-v3/haos-build
-      # 交叉编译工具链前缀（RK3399为arm64）
       CROSS_COMPILE: aarch64-linux-gnu-
       ARCH: arm64
 
     steps:
-      # 步骤1：拉取仓库源码（仅拉取最新提交，减少冗余）
       - name: Checkout Repository
         uses: actions/checkout@v4
         with:
           path: haos-repo
-          fetch-depth: 1  # 仅拉取最新1个提交，节省时间
+          fetch-depth: 1
 
-      # 步骤2：缓存核心资源（关键提速！）
       - name: Cache Dependencies & Build Files
         uses: actions/cache@v3
         with:
           path: |
-            # 缓存交叉编译工具链
             /usr/bin/aarch64-linux-gnu-*
-            # 缓存编译缓存（ccache）
             ~/.ccache
-            # 缓存内核源码（若分支未更新，直接复用）
             ${{ env.WORK_DIR }}/linux-src
-            # 缓存HAOS基础根文件系统（若版本未变，无需重下）
             ${{ env.WORK_DIR }}/rootfs
-          key: ${{ runner.os }}-cache-${{ env.HAOS_VERSION }}-${{ env.KERNEL_VERSION }}
-          # 缓存命中策略：版本一致则复用，不一致则更新
+          # 缓存键同步改为 KERNEL_BRANCH，避免分支变更时复用旧缓存
+          key: ${{ runner.os }}-cache-${{ env.HAOS_VERSION }}-${{ env.KERNEL_BRANCH }}
           restore-keys: |
             ${{ runner.os }}-cache-${{ env.HAOS_VERSION }}-
             ${{ runner.os }}-cache-
 
-      # 步骤3：合并安装依赖（减少apt调用次数）
       - name: Install Required Dependencies
         run: |
           sudo apt update -y && sudo apt install -y \
             make gcc-aarch64-linux-gnu g++-aarch64-linux-gnu \
-            bc flex bison dtc ccache kmod cpio \
+            bc flex bison device-tree-compiler ccache kmod cpio \  # 修复：dtc 替换为 device-tree-compiler（适配Ubuntu 24.04）
             parted dosfstools squashfs-tools \
             git wget curl docker.io
-          # 启动Docker服务（后续镜像构建用）
           sudo systemctl start docker
-          # 配置ccache（启用编译缓存）
           echo "export CCACHE_DIR=~/.ccache" >> ~/.bashrc
           echo "export USE_CCACHE=1" >> ~/.bashrc
           source ~/.bashrc
-          ccache -M 5G  # 限制缓存大小（免费额度下避免占满存储）
+          ccache -M 5G
 
-      # 步骤4：准备工作目录（避免路径混乱）
       - name: Prepare Work Directory
         run: |
           mkdir -p ${{ env.WORK_DIR }}
           cd ${{ env.WORK_DIR }}
-          # 仅当内核源码不存在时才下载（缓存复用）
+          # 关键修复：克隆时使用仓库标准分支（KERNEL_BRANCH），而非具体补丁版本
           if [ ! -d "linux-src" ]; then
-            git clone --branch linux-${{ env.KERNEL_VERSION }} \
+            git clone --branch ${{ env.KERNEL_BRANCH }} \
               https://github.com/rockchip-linux/kernel.git linux-src
           fi
-          # 仅当根文件系统不存在时才下载（缓存复用）
+          # 根文件系统下载逻辑不变（若HAOS版本存在则正常下载）
           if [ ! -d "rootfs" ]; then
+            # 额外增加：检查HAOS根文件是否存在，避免404错误
+            if ! wget --spider https://github.com/home-assistant/operating-system/releases/download/${{ env.HAOS_VERSION }}/haos-rootfs-${{ env.HAOS_VERSION }}.tar.xz 2>/dev/null; then
+              echo "Error: HAOS rootfs file ${{ env.HAOS_VERSION }} not found!"
+              exit 1
+            fi
             wget https://github.com/home-assistant/operating-system/releases/download/${{ env.HAOS_VERSION }}/haos-rootfs-${{ env.HAOS_VERSION }}.tar.xz
             mkdir -p rootfs && tar -xf haos-rootfs-${{ env.HAOS_VERSION }}.tar.xz -C rootfs
           fi
 
-      # 步骤5：编译内核+设备树（并行编译+缓存）
       - name: Build Kernel & DTB
         run: |
           cd ${{ env.WORK_DIR }}/linux-src
-          source ~/.bashrc  # 加载ccache配置
-          # 内核配置（仅首次构建生成，后续复用.config）
+          source ~/.bashrc
+          # 修复：增加配置文件检查，避免找不到 tn3399_v3_defconfig 时失败
           if [ ! -f ".config" ]; then
-            make tn3399_v3_defconfig  # 假设板卡有自定义配置，无则用rockchip_defconfig
+            if [ -f "arch/${{ env.ARCH }}/configs/tn3399_v3_defconfig" ]; then
+              make tn3399_v3_defconfig
+            else
+              echo "Warning: tn3399_v3_defconfig not found, use rockchip_defconfig instead!"
+              make rockchip_defconfig  # 降级使用RK3399通用配置，避免构建中断
+            fi
           fi
-          # 并行编译（-j$(nproc)自动适配核心数，免费Runner通常2核）
           make -j$(nproc) ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
-            zImage dtbs modules  # 编译内核镜像、设备树、驱动模块
-          # 安装模块到根文件系统（增量安装，仅更新新模块）
+            zImage dtbs modules
           make modules_install ARCH=${{ env.ARCH }} CROSS_COMPILE=${{ env.CROSS_COMPILE }} \
             INSTALL_MOD_PATH=${{ env.WORK_DIR }}/rootfs
 
-      # 步骤6：构建HAOS镜像（精简打包逻辑）
       - name: Build HAOS Image
         run: |
           cd ${{ env.WORK_DIR }}
-          # 复制内核和设备树到根文件系统（仅覆盖更新）
+          # 检查内核和DTB是否生成，避免后续复制失败
+          if [ ! -f "linux-src/arch/${{ env.ARCH }}/boot/zImage" ] || [ ! -f "linux-src/arch/${{ env.ARCH }}/boot/dts/rockchip/rk3399-tn3399-v3.dtb" ]; then
+            echo "Error: Kernel zImage or DTB not generated!"
+            exit 1
+          fi
           cp linux-src/arch/${{ env.ARCH }}/boot/zImage rootfs/boot/
           cp linux-src/arch/${{ env.ARCH }}/boot/dts/rockchip/rk3399-tn3399-v3.dtb rootfs/boot/
-          # 生成镜像（简化分区，仅保留必要分区）
+          # 检查打包脚本是否存在（基于项目结构）
+          if [ ! -f "./haos-repo/scripts/mkhaosimg.sh" ]; then
+            echo "Error: mkhaosimg.sh script not found in haos-repo!"
+            exit 1
+          fi
           sudo ./haos-repo/scripts/mkhaosimg.sh \
             -v ${{ env.HAOS_VERSION }} \
-            -k ${{ env.KERNEL_VERSION }} \
+            -k ${{ env.KERNEL_BRANCH }} \  # 此处可改为具体补丁版本（如6.12.35），不影响镜像命名
             -r rootfs \
             -o haos-tn3399-v3-${{ env.HAOS_VERSION }}.img
 
-      # 步骤7：上传镜像（仅保留1个版本，避免存储溢出）
       - name: Upload HAOS Image
         uses: actions/upload-artifact@v4
         with:
           name: haos-tn3399-v3-${{ env.HAOS_VERSION }}
           path: ${{ env.WORK_DIR }}/haos-tn3399-v3-${{ env.HAOS_VERSION }}.img
-          retention-days: 7  # 自动删除7天前的镜像，节省免费存储
+          retention-days: 7
