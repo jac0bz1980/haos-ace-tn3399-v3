@@ -2,21 +2,12 @@ name: Multi-Target Build
 on:
   workflow_dispatch:
   schedule:
-    - cron: '0 0 28 * ?'
-  # 优化 1: 路径过滤。如果是修改文档，不要触发耗时的系统编译
+    - cron: '0 0 28 * ?'  #  每月28日0时编译，cron表达式，格式为分 时 日 月 周
   #push:
-   # paths-ignore:
-    #  - '**.md'
-    #  - 'docs/**'
-    #  - '.gitignore'
-
+  #  branches: ["master"]
 env:
-  GIT_TERMINAL_PROMPT: 0
-  GIT_SUBMODULE_STRATEGY: recursive
-  # 定义缓存路径变量
-  BUILDROOT_CACHE_DIR: ~/.buildroot-ccache
-  BUILDROOT_DL_DIR: downloads
-
+  GIT_TERMINAL_PROMPT: 0  # 禁用终端提示
+  GIT_SUBMODULE_STRATEGY: recursive  # 强制递归初始化子模块
 jobs:
   prepare:
     runs-on: ubuntu-latest
@@ -26,20 +17,18 @@ jobs:
       - name: Generate target matrix
         id: set-matrix
         run: |
+          # 定义目标列表
           TARGETS='["tn3399_v3"]'
           echo "matrix=$TARGETS" >> $GITHUB_OUTPUT
 
   build:
     needs: prepare
     runs-on: ubuntu-latest
-    # 优化 2: 设置超时 (6小时)。防止卡死消耗所有免费额度
-    timeout-minutes: 360
     strategy:
       fail-fast: false
       matrix:
         target: ${{ fromJson(needs.prepare.outputs.matrix) }}
     name: Build ${{ matrix.target }}
-    
     steps:
       - uses: actions/checkout@v4
         with:
@@ -49,79 +38,46 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2
 
-      # 优化 3: 使用专用 Action 清理空间
-      # 比手动 rm -rf 更彻底、更快，释放约 30GB 空间，防止编译后期磁盘爆满
-      - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: true
-          docker-images: true
-          swap-storage: true
-
-      # 优化 4: 缓存 Buildroot 下载源 (DL)
-      # 避免每次都重新下载 Kernel, U-Boot 等源码 (节省 10-20分钟)
-      - name: Cache Buildroot Downloads
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.BUILDROOT_DL_DIR }}
-          key: ${{ runner.os }}-buildroot-dl-${{ hashFiles('**/.config', '**/*.mk') }}
-          restore-keys: |
-            ${{ runner.os }}-buildroot-dl-
-
-      # 优化 5: 缓存编译器输出 (CCache) - 提速核心
-      # 复用 .o 文件。二次构建时，未修改的代码直接跳过编译 (时间可从数小时缩短至几十分钟)
-      - name: Cache Buildroot CCache
-        uses: actions/cache@v4
-        with:
-          path: ${{ env.BUILDROOT_CACHE_DIR }}
-          key: ${{ runner.os }}-buildroot-ccache-${{ github.sha }}
-          restore-keys: |
-            ${{ runner.os }}-buildroot-ccache-
-
-      - name: Initialization environment
+      - name: Initialization environment and Free up disk space
         run: |
           sudo timedatectl set-timezone "Asia/Shanghai"
-          # 创建缓存目录防止报错
-          mkdir -p ${{ env.BUILDROOT_DL_DIR }}
-          mkdir -p ${{ env.BUILDROOT_CACHE_DIR }}
-
+          sudo rm -rf /usr/local/lib/android
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /var/lib/apt/lists/*
+          sudo rm -rf /var/cache/apt/archives/*
+          sudo rm -rf /var/cache/debconf/*-old
+          sudo rm -rf /opt/hostedtoolcache/CodeQL
+          sudo apt clean
+          sudo rm -rf /etc/apt/sources.list.d/*
+          sudo apt-get -qq update -y
+          sudo apt-get -qq autoremove --purge -y
+          sudo apt-get -qq clean -y
+          sudo rm -rf "/usr/local/share/boost"
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          #sudo rm -rf /usr/share/
+          df -h
       - name: Write keys
         run: |
           echo "${{ secrets.MID_KEY_PEM }}" > ./operating-system/key.pem
           echo "${{ secrets.MID_CERT_PEM }}" > ./operating-system/cert.pem
 
-      - name: Build HAOS-ACE
+      - name: Build HAOS-ACE with retry
         shell: 'script -q -e -c "bash {0}"'
-        # 优化 6: 注入环境变量启用缓存，并移除死循环重试
-        env:
-          BR2_DL_DIR: ${{ github.workspace }}/${{ env.BUILDROOT_DL_DIR }}
-          BR2_CCACHE: y
-          BR2_CCACHE_DIR: ${{ env.BUILDROOT_CACHE_DIR }}
         run: |
-          # 移除原本的 while 重试循环。
-          # 原因：编译整个系统极度耗时，如果因代码错误失败，重试3次会直接导致 6小时超时。
-          # 依靠 Cache 机制，如果因网络中断，手动 Re-run 会自动接续上次进度，无需脚本内重试。
-          
-          echo "Starting build for ${{ matrix.target }}..."
-          
-          # 确保脚本有执行权限
-          chmod +x ./build.sh
-          
-          # 执行编译
-          ./build.sh ${{ matrix.target }}
+
+          max_retries=3
+          count=0
+          until ./build.sh ${{ matrix.target }}; do
+            count=$((count+1))
+            [[ $count -ge $max_retries ]] && exit 1
+            sleep 30
+          done
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: build-${{ matrix.target }}
           path: output/images/haos*
-          # 优化 7: 禁用二次压缩
-          # 镜像本来就是 .img.xz，GitHub 默认还会再压一次 zip，浪费 CPU 和上传时间
-          compression-level: 0 
 
       - name: Get current date
         id: date
