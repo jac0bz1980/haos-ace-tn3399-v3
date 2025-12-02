@@ -1,38 +1,42 @@
-name: Auto Update Submodule and Merge PR
+name: Submodule Sync
+# 触发条件：每天UTC4点执行，且支持手动触发
 on:
   schedule:
     - cron: "0 4 * * *"
   workflow_dispatch:
 jobs:
-  update-and-pr:
+  sync:
     runs-on: ubuntu-latest
     permissions:
-      pull-requests: write
-      contents: write
+      pull-requests: write  # 需开启PR写入权限
+      contents: write       # 需开启代码写入权限
     steps:
-      # 1. 检出父仓库及子模块
-      - name: Checkout Parent Repo
-        uses: actions/checkout@v5
+      - name: Sync Submodule
+        id: submodule_sync  # 给该步骤设ID，用于后续获取PR编号
+        uses: mheap/submodule-sync-action@v1
         with:
-          submodules: recursive
-          token: ${{ secrets.PAT }}
-      # 2. 更新子模块
-      - name: Update Submodules
-        run: git submodule update --remote --merge
-      # 3. 创建PR提交子模块更新
-      - name: Create Pull Request
-        id: cpr
-        uses: peter-evans/create-pull-request@v7
-        with:
-          token: ${{ secrets.PAT }}
-          title: "Auto update submodules"
-          body: "Automatically sync latest submodule changes"
-          branch: auto-submodule-update
-      # 4. 为创建的PR启用自动合并
-      - name: Enable Auto-Merge for PR
-        if: steps.cpr.outputs.pull-request-number != ''
+          token: ${{ secrets.PAT }}  # 传入准备好的PAT令牌
+          path: operating-system        # 子模块在父仓库中的路径
+          ref: main                  # 子模块要同步的分支
+          pr_branch: auto-submodule-update  # 创建PR的分支名
+          target_branch: master        # PR要合并到的父仓库分支
+          pr_body: "Automatically sync latest submodule changes. This PR will auto-merge after checks pass."  # 自定义PR描述
+
+      # 新增步骤1：提取PR编号
+      # 从submodule-sync-action的输出中获取创建的PR编号
+      - name: Extract PR Number
+        id: extract_pr
+        if: success()  # 仅前一步成功时执行
+        run: |
+          # 从步骤输出中过滤出PR编号（该Action执行成功会输出类似"Pull request #123 created"的日志）
+          PR_NUM=$(echo "${{ steps.submodule_sync.outputs.result }}" | grep -oE '#[0-9]+' | tr -d '#')
+          echo "pr_number=$PR_NUM" >> $GITHUB_ENV
+
+      # 新增步骤2：启用PR自动合并
+      - name: Enable Auto-Merge for Submodule PR
+        if: env.pr_number != ''  # 仅获取到PR编号时执行
         uses: peter-evans/enable-pull-request-automerge@v3
         with:
           token: ${{ secrets.PAT }}
-          pull-request-number: ${{ steps.cpr.outputs.pull-request-number }}
-          merge-method: squash
+          pull-request-number: ${{ env.pr_number }}  # 传入提取到的PR编号
+          merge-method: squash  # 合并方式，可选squash（压缩合并）、merge（普通合并）、rebase（变基合并）
