@@ -1,17 +1,38 @@
-name: Submodule Sync
-# 触发条件：每天UTC4点执行，且支持手动触发
+name: Auto Update Submodule and Merge PR
 on:
   schedule:
     - cron: "0 4 * * *"
   workflow_dispatch:
 jobs:
-  sync:
+  update-and-pr:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+      contents: write
     steps:
-      - name: Sync Submodule
-        uses: mheap/submodule-sync-action@v1
+      # 1. 检出父仓库及子模块
+      - name: Checkout Parent Repo
+        uses: actions/checkout@v5
         with:
-          path: operating-system  # 必填，子模块在父仓库中的路径
-          ref: main            # 必填，子模块要同步的分支
-          pr_branch: auto-submodule-update  # 必填，创建PR的分支名
-          target_branch: master  # 必填，PR要合并到的父仓库分支
+          submodules: recursive
+          token: ${{ secrets.PAT }}
+      # 2. 更新子模块
+      - name: Update Submodules
+        run: git submodule update --remote --merge
+      # 3. 创建PR提交子模块更新
+      - name: Create Pull Request
+        id: cpr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          token: ${{ secrets.PAT }}
+          title: "Auto update submodules"
+          body: "Automatically sync latest submodule changes"
+          branch: auto-submodule-update
+      # 4. 为创建的PR启用自动合并
+      - name: Enable Auto-Merge for PR
+        if: steps.cpr.outputs.pull-request-number != ''
+        uses: peter-evans/enable-pull-request-automerge@v3
+        with:
+          token: ${{ secrets.PAT }}
+          pull-request-number: ${{ steps.cpr.outputs.pull-request-number }}
+          merge-method: squash
