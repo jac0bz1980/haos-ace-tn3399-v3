@@ -1,5 +1,5 @@
-BOARD_ID=rk3399-pc
-BOARD_NAME="Hardkernel rk3399-pc"
+BOARD_ID=tn3399-v3
+BOARD_NAME="Hardkernel tn3399-v3"
 CHASSIS=embedded
 BOOTLOADER=uboot
 KERNEL_FILE=Image
