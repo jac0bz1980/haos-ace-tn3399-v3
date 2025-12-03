@@ -38,7 +38,7 @@ fi
 fileenv ${devtype} ${devnum}:${boot_partnum} ${ramdisk_addr_r} cmdline.txt cmdline
 
 # Load device tree
-setenv fdtfile rk3399-custom.dtb
+setenv fdtfile rk3399-tn3399-v3.dtb
 echo "Loading standard device tree ${fdtfile}"
 fatload ${devtype} ${devnum}:${boot_partnum} ${fdt_addr_r} ${fdtfile}
 fdt addr ${fdt_addr_r}
