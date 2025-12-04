@@ -772,7 +772,6 @@ index 0000000..abcdefg
 +};
 +
 +&sdmmc {
-+ compatible = "rockchip,rk3399-dw-mshc\0rockchip,rk3288-dw-mshc";
 +	bus-width = <4>;
 +	cap-mmc-highspeed;
 +	cap-sd-highspeed;
