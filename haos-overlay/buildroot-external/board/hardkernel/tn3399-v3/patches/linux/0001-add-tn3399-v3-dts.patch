@@ -783,10 +783,10 @@ index 0000000..abcdefg
 +	pinctrl-0 = <&sdmmc_clk &sdmmc_cd &sdmmc_cmd &sdmmc_bus4>;
 +	vmmc-supply = <&vcc3v0_sd>;
 +	vqmmc-supply = <&vcc3v0_sd>;
-+ cap-sd-uhs-sdr12;
-+ cap-sd-uhs-sdr25;
-+ cap-sd-uhs-sdr50;
-+ cap-sd-uhs-sdr104;
++	cap-sd-uhs-sdr12;
++	cap-sd-uhs-sdr25;
++	cap-sd-uhs-sdr50;
++	cap-sd-uhs-sdr104;
 +	status = "okay";
 +};
 +
