@@ -13,7 +13,7 @@ new file mode 100644
 index 0000000..abcdefg
 --- /dev/null
 +++ b/arch/arm64/boot/dts/rockchip/rk3399-tn3399-v3.dts
-@@ -0,0 +1,891 @@
+@@ -0,0 +1,889 @@
 +// SPDX-License-Identifier: (GPL-2.0+ OR MIT)
 +/*
 + * Copyright (c) 2017 Fuzhou Rockchip Electronics Co., Ltd.
@@ -782,9 +782,7 @@ index 0000000..abcdefg
 +	pinctrl-0 = <&sdmmc_clk &sdmmc_cd &sdmmc_cmd &sdmmc_bus4>;
 +	vmmc-supply = <&vcc3v0_sd>;
 +	vqmmc-supply = <&vcc3v0_sd>;
-+	cap-sd-uhs-sdr12;
-+	cap-sd-uhs-sdr25;
-+	cap-sd-uhs-sdr50;
++	no-1-8-v;
 +	cap-sd-uhs-sdr104;
 +	status = "okay";
 +};
