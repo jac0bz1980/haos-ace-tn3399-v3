@@ -80,3 +80,5 @@ txpwr5gAdcScale=1
 vcodivmode=1
 vendid=0x14e4
 xtalfreq=37400
+sdio_irq_act=0x00000001
+max_pkt_per_tx=16
