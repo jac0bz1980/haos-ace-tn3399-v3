@@ -578,7 +578,7 @@ index 0000000..abcdefg
 +	rt5640: rt5640@1c {
 +		compatible = "realtek,rt5640";
 +		reg = <0x1c>;
-+		clocks = <&cru 0x59>;
++		clocks = <&cru SCLK_I2S_8CH_OUT>;
 +		clock-names = "mclk";
 +		realtek,in1-differential;
 +		#sound-dai-cells = <0>;
