@@ -344,7 +344,7 @@ index 0000000..abcdefg
 +};
 +
 +&hdmi_sound {
-+	status = "disabled";
++	status = "okay";
 +};
 +
 +&i2c0 {
@@ -618,7 +618,7 @@ index 0000000..abcdefg
 +};
 +
 +&i2s2 {
-+	status = "okay";
++	status = "disabled";
 +};
 +
 +&io_domains {
